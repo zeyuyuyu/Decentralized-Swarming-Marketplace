@@ -1,93 +1,101 @@
-import asyncio
-import json
 import time
-from typing import Dict, Set
+import random
+import threading
+from dataclasses import dataclass
+from typing import Dict, List, Set
+
+@dataclass
+class PeerInfo:
+    address: str
+    last_seen: float
+    services: List[str]
 
 class SwarmNode:
-    def __init__(self, node_id: str, host: str = 'localhost', port: int = 8000):
+    def __init__(self, node_id: str, port: int):
         self.node_id = node_id
-        self.host = host
         self.port = port
-        self.peers: Dict[str, dict] = {}
-        self.active = False
-        self.last_heartbeat: Dict[str, float] = {}
-        self.heartbeat_interval = 5.0
-        self.peer_timeout = 15.0
+        self.peers: Dict[str, PeerInfo] = {}
+        self.services: Set[str] = set()
+        self.is_running = False
+        self._lock = threading.Lock()
 
-    async def start(self):
+    def start(self):
         """Start the swarm node and begin peer discovery"""
-        self.active = True
-        await asyncio.gather(
-            self.heartbeat_loop(),
-            self.cleanup_loop()
-        )
+        self.is_running = True
+        self._discovery_thread = threading.Thread(target=self._run_discovery)
+        self._heartbeat_thread = threading.Thread(target=self._run_heartbeat)
+        self._discovery_thread.start()
+        self._heartbeat_thread.start()
 
-    async def heartbeat_loop(self):
-        """Periodically send heartbeat to all known peers"""
-        while self.active:
-            heartbeat = {
-                'type': 'heartbeat',
-                'node_id': self.node_id,
-                'timestamp': time.time(),
-                'peers': list(self.peers.keys())
-            }
-            for peer_id, peer_info in self.peers.items():
-                try:
-                    # Simulate network call for now
-                    # In real implementation, would use actual network transport
-                    await self.send_to_peer(peer_id, heartbeat)
-                except Exception as e:
-                    print(f'Failed to send heartbeat to {peer_id}: {e}')
-            
-            await asyncio.sleep(self.heartbeat_interval)
+    def stop(self):
+        """Stop the swarm node and cleanup"""
+        self.is_running = False
+        self._discovery_thread.join()
+        self._heartbeat_thread.join()
 
-    async def cleanup_loop(self):
-        """Remove peers that haven't sent a heartbeat recently"""
-        while self.active:
-            current_time = time.time()
-            dead_peers = [
-                peer_id for peer_id, last_beat in self.last_heartbeat.items()
-                if current_time - last_beat > self.peer_timeout
+    def register_service(self, service_name: str):
+        """Register a service that this node can provide"""
+        with self._lock:
+            self.services.add(service_name)
+
+    def unregister_service(self, service_name: str):
+        """Remove a service from this node"""
+        with self._lock:
+            self.services.discard(service_name)
+
+    def get_peers_for_service(self, service_name: str) -> List[str]:
+        """Find all peers that provide a specific service"""
+        with self._lock:
+            return [
+                peer_id for peer_id, info in self.peers.items()
+                if service_name in info.services
             ]
-            
-            for peer_id in dead_peers:
-                self.remove_peer(peer_id)
-            
-            await asyncio.sleep(self.heartbeat_interval)
 
-    async def send_to_peer(self, peer_id: str, message: dict):
-        """Send a message to a specific peer"""
-        if peer_id not in self.peers:
-            raise ValueError(f'Unknown peer {peer_id}')
-        
-        # Simulate network send - replace with actual transport
-        peer = self.peers[peer_id]
-        print(f'Sending to {peer_id}: {message}')
+    def _run_discovery(self):
+        """Background thread for peer discovery"""
+        while self.is_running:
+            try:
+                # Simulate peer discovery
+                if random.random() < 0.1:  # 10% chance to discover new peer
+                    peer_id = f"peer_{random.randint(1000, 9999)}"
+                    peer_info = PeerInfo(
+                        address=f"192.168.1.{random.randint(2, 254)}",
+                        last_seen=time.time(),
+                        services=[f"service_{random.randint(1, 5)}"]
+                    )
+                    with self._lock:
+                        self.peers[peer_id] = peer_info
+            except Exception as e:
+                print(f"Discovery error: {e}")
+            time.sleep(5)
 
-    def add_peer(self, peer_id: str, peer_info: dict):
-        """Add a new peer to the swarm"""
-        if peer_id not in self.peers:
-            self.peers[peer_id] = peer_info
-            self.last_heartbeat[peer_id] = time.time()
-            print(f'Added peer {peer_id}')
+    def _run_heartbeat(self):
+        """Background thread for peer heartbeat and cleanup"""
+        while self.is_running:
+            try:
+                current_time = time.time()
+                with self._lock:
+                    # Remove peers not seen in last 30 seconds
+                    self.peers = {
+                        peer_id: info for peer_id, info in self.peers.items()
+                        if (current_time - info.last_seen) < 30
+                    }
+                    # Update last_seen for connected peers
+                    for peer_id in list(self.peers.keys()):
+                        if random.random() < 0.8:  # 80% chance of successful heartbeat
+                            self.peers[peer_id].last_seen = current_time
+            except Exception as e:
+                print(f"Heartbeat error: {e}")
+            time.sleep(1)
 
-    def remove_peer(self, peer_id: str):
-        """Remove a peer from the swarm"""
-        if peer_id in self.peers:
-            del self.peers[peer_id]
-            del self.last_heartbeat[peer_id]
-            print(f'Removed peer {peer_id}')
-
-    def handle_heartbeat(self, peer_id: str, heartbeat: dict):
-        """Process a heartbeat received from a peer"""
-        self.last_heartbeat[peer_id] = heartbeat['timestamp']
-        
-        # Add any new peers we learn about
-        for new_peer_id in heartbeat['peers']:
-            if new_peer_id not in self.peers and new_peer_id != self.node_id:
-                # In real implementation, would need to get peer info
-                self.add_peer(new_peer_id, {'host': 'unknown', 'port': 0})
-
-    async def stop(self):
-        """Stop the swarm node"""
-        self.active = False
+    def get_network_stats(self) -> Dict:
+        """Get statistics about the node's network"""
+        with self._lock:
+            return {
+                "total_peers": len(self.peers),
+                "active_services": list(self.services),
+                "peer_services": {
+                    peer_id: info.services
+                    for peer_id, info in self.peers.items()
+                }
+            }
