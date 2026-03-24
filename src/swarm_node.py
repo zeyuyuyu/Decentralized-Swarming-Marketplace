@@ -1,92 +1,56 @@
-import asyncio
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+import random
 import time
 
-@dataclass
-class PeerStats:
-    uptime: float
-    success_rate: float
-    last_seen: float
-    total_transactions: int
-    response_time: float
-
 class SwarmNode:
-    def __init__(self, node_id: str, host: str, port: int):
+    def __init__(self, node_id):
         self.node_id = node_id
-        self.host = host
-        self.port = port
-        self.peers: Dict[str, PeerStats] = {}
-        self.active = False
-        self.load_threshold = 0.8
+        self.neighbors = []
+        self.task_queue = []
+        self.consensus_state = 'idle'
+        self.consensus_round = 0
+        self.consensus_vote = None
 
-    async def start(self):
-        self.active = True
-        await asyncio.gather(
-            self.peer_discovery_loop(),
-            self.reputation_update_loop()
-        )
+    def add_neighbor(self, neighbor):
+        self.neighbors.append(neighbor)
 
-    async def peer_discovery_loop(self):
-        while self.active:
-            await self.discover_peers()
-            await asyncio.sleep(30)
+    def submit_task(self, task):
+        self.task_queue.append(task)
+        self.initiate_consensus()
 
-    async def discover_peers(self):
-        # Implement DHT-based peer discovery here
-        pass
+    def initiate_consensus(self):
+        if self.consensus_state == 'idle':
+            self.consensus_state = 'proposed'
+            self.consensus_round += 1
+            self.consensus_vote = random.choice(['accept', 'reject'])
+            self.broadcast_vote()
 
-    async def reputation_update_loop(self):
-        while self.active:
-            self._update_peer_scores()
-            await asyncio.sleep(60)
+    def broadcast_vote(self):
+        for neighbor in self.neighbors:
+            neighbor.receive_vote(self.node_id, self.consensus_round, self.consensus_vote)
 
-    def _update_peer_scores(self):
-        current_time = time.time()
-        for peer_id, stats in self.peers.items():
-            # Decay old reputation scores
-            time_factor = max(0, 1 - (current_time - stats.last_seen) / 3600)
-            stats.success_rate *= time_factor
+    def receive_vote(self, sender_id, round_num, vote):
+        if round_num == self.consensus_round:
+            self.consensus_vote = vote
+            self.tally_votes()
 
-    def get_best_peers(self, n: int = 3) -> List[str]:
-        """Return top N peers based on reputation score"""
-        scored_peers = [
-            (peer_id, self._calculate_reputation(stats))
-            for peer_id, stats in self.peers.items()
-        ]
-        return [p[0] for p in sorted(scored_peers, key=lambda x: x[1], reverse=True)[:n]]
+    def tally_votes(self):
+        accept_count = 0
+        reject_count = 0
+        for neighbor in self.neighbors:
+            if neighbor.consensus_vote == 'accept':
+                accept_count += 1
+            elif neighbor.consensus_vote == 'reject':
+                reject_count += 1
 
-    def _calculate_reputation(self, stats: PeerStats) -> float:
-        uptime_weight = 0.3
-        success_weight = 0.4
-        response_weight = 0.3
+        if accept_count > reject_count:
+            self.consensus_state = 'accepted'
+            self.execute_task()
+        else:
+            self.consensus_state = 'rejected'
+            self.task_queue.pop(0)
 
-        response_score = 1.0 / (1.0 + stats.response_time)  # Normalize response time
-        
-        return (
-            (stats.uptime * uptime_weight) +
-            (stats.success_rate * success_weight) +
-            (response_score * response_weight)
-        )
-
-    async def handle_transaction(self, transaction_data: dict) -> bool:
-        if self._is_overloaded():
-            best_peers = self.get_best_peers()
-            if best_peers:
-                return await self._delegate_transaction(transaction_data, best_peers[0])
-        return await self._process_transaction(transaction_data)
-
-    def _is_overloaded(self) -> bool:
-        # Implementation of load checking logic
-        return False
-
-    async def _delegate_transaction(self, transaction_data: dict, peer_id: str) -> bool:
-        # Implementation of transaction delegation
-        return True
-
-    async def _process_transaction(self, transaction_data: dict) -> bool:
-        # Implementation of local transaction processing
-        return True
-
-    async def stop(self):
-        self.active = False
+    def execute_task(self):
+        task = self.task_queue.pop(0)
+        print(f'Executing task: {task}')
+        time.sleep(2)
+        print(f'Task {task} completed.')
