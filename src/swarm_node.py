@@ -1,101 +1,92 @@
-import time
-import random
-import threading
+import asyncio
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import Dict, List, Optional
+import time
 
 @dataclass
-class PeerInfo:
-    address: str
+class PeerStats:
+    uptime: float
+    success_rate: float
     last_seen: float
-    services: List[str]
+    total_transactions: int
+    response_time: float
 
 class SwarmNode:
-    def __init__(self, node_id: str, port: int):
+    def __init__(self, node_id: str, host: str, port: int):
         self.node_id = node_id
+        self.host = host
         self.port = port
-        self.peers: Dict[str, PeerInfo] = {}
-        self.services: Set[str] = set()
-        self.is_running = False
-        self._lock = threading.Lock()
+        self.peers: Dict[str, PeerStats] = {}
+        self.active = False
+        self.load_threshold = 0.8
 
-    def start(self):
-        """Start the swarm node and begin peer discovery"""
-        self.is_running = True
-        self._discovery_thread = threading.Thread(target=self._run_discovery)
-        self._heartbeat_thread = threading.Thread(target=self._run_heartbeat)
-        self._discovery_thread.start()
-        self._heartbeat_thread.start()
+    async def start(self):
+        self.active = True
+        await asyncio.gather(
+            self.peer_discovery_loop(),
+            self.reputation_update_loop()
+        )
 
-    def stop(self):
-        """Stop the swarm node and cleanup"""
-        self.is_running = False
-        self._discovery_thread.join()
-        self._heartbeat_thread.join()
+    async def peer_discovery_loop(self):
+        while self.active:
+            await self.discover_peers()
+            await asyncio.sleep(30)
 
-    def register_service(self, service_name: str):
-        """Register a service that this node can provide"""
-        with self._lock:
-            self.services.add(service_name)
+    async def discover_peers(self):
+        # Implement DHT-based peer discovery here
+        pass
 
-    def unregister_service(self, service_name: str):
-        """Remove a service from this node"""
-        with self._lock:
-            self.services.discard(service_name)
+    async def reputation_update_loop(self):
+        while self.active:
+            self._update_peer_scores()
+            await asyncio.sleep(60)
 
-    def get_peers_for_service(self, service_name: str) -> List[str]:
-        """Find all peers that provide a specific service"""
-        with self._lock:
-            return [
-                peer_id for peer_id, info in self.peers.items()
-                if service_name in info.services
-            ]
+    def _update_peer_scores(self):
+        current_time = time.time()
+        for peer_id, stats in self.peers.items():
+            # Decay old reputation scores
+            time_factor = max(0, 1 - (current_time - stats.last_seen) / 3600)
+            stats.success_rate *= time_factor
 
-    def _run_discovery(self):
-        """Background thread for peer discovery"""
-        while self.is_running:
-            try:
-                # Simulate peer discovery
-                if random.random() < 0.1:  # 10% chance to discover new peer
-                    peer_id = f"peer_{random.randint(1000, 9999)}"
-                    peer_info = PeerInfo(
-                        address=f"192.168.1.{random.randint(2, 254)}",
-                        last_seen=time.time(),
-                        services=[f"service_{random.randint(1, 5)}"]
-                    )
-                    with self._lock:
-                        self.peers[peer_id] = peer_info
-            except Exception as e:
-                print(f"Discovery error: {e}")
-            time.sleep(5)
+    def get_best_peers(self, n: int = 3) -> List[str]:
+        """Return top N peers based on reputation score"""
+        scored_peers = [
+            (peer_id, self._calculate_reputation(stats))
+            for peer_id, stats in self.peers.items()
+        ]
+        return [p[0] for p in sorted(scored_peers, key=lambda x: x[1], reverse=True)[:n]]
 
-    def _run_heartbeat(self):
-        """Background thread for peer heartbeat and cleanup"""
-        while self.is_running:
-            try:
-                current_time = time.time()
-                with self._lock:
-                    # Remove peers not seen in last 30 seconds
-                    self.peers = {
-                        peer_id: info for peer_id, info in self.peers.items()
-                        if (current_time - info.last_seen) < 30
-                    }
-                    # Update last_seen for connected peers
-                    for peer_id in list(self.peers.keys()):
-                        if random.random() < 0.8:  # 80% chance of successful heartbeat
-                            self.peers[peer_id].last_seen = current_time
-            except Exception as e:
-                print(f"Heartbeat error: {e}")
-            time.sleep(1)
+    def _calculate_reputation(self, stats: PeerStats) -> float:
+        uptime_weight = 0.3
+        success_weight = 0.4
+        response_weight = 0.3
 
-    def get_network_stats(self) -> Dict:
-        """Get statistics about the node's network"""
-        with self._lock:
-            return {
-                "total_peers": len(self.peers),
-                "active_services": list(self.services),
-                "peer_services": {
-                    peer_id: info.services
-                    for peer_id, info in self.peers.items()
-                }
-            }
+        response_score = 1.0 / (1.0 + stats.response_time)  # Normalize response time
+        
+        return (
+            (stats.uptime * uptime_weight) +
+            (stats.success_rate * success_weight) +
+            (response_score * response_weight)
+        )
+
+    async def handle_transaction(self, transaction_data: dict) -> bool:
+        if self._is_overloaded():
+            best_peers = self.get_best_peers()
+            if best_peers:
+                return await self._delegate_transaction(transaction_data, best_peers[0])
+        return await self._process_transaction(transaction_data)
+
+    def _is_overloaded(self) -> bool:
+        # Implementation of load checking logic
+        return False
+
+    async def _delegate_transaction(self, transaction_data: dict, peer_id: str) -> bool:
+        # Implementation of transaction delegation
+        return True
+
+    async def _process_transaction(self, transaction_data: dict) -> bool:
+        # Implementation of local transaction processing
+        return True
+
+    async def stop(self):
+        self.active = False
